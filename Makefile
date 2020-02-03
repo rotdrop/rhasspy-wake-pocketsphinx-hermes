@@ -5,6 +5,7 @@ SOURCE = $(PYTHON_NAME)
 PYTHON_FILES = $(SOURCE)/*.py bin/*.py *.py
 SHELL_FILES = bin/$(PACKAGE_NAME) debian/bin/* *.sh
 PIP_INSTALL ?= install
+DOWNLOAD_DIR = download
 
 .PHONY: reformat check dist venv test pyinstaller debian docker deploy
 
@@ -32,13 +33,8 @@ check:
 	yamllint .
 	pip list --outdated
 
-venv: pocketsphinx-python.tar.gz
-	rm -rf .venv/
-	python3 -m venv .venv
-	.venv/bin/pip3 $(PIP_INSTALL) wheel setuptools
-	.venv/bin/pip3 $(PIP_INSTALL) pocketsphinx-python.tar.gz
-	.venv/bin/pip3 $(PIP_INSTALL) -r requirements.txt
-	.venv/bin/pip3 $(PIP_INSTALL) -r requirements_dev.txt
+venv: $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz
+	scripts/create-venv.sh
 
 dist: sdist debian
 
@@ -57,13 +53,13 @@ docker: pyinstaller
 
 deploy:
 	echo "$$DOCKER_PASSWORD" | docker login -u "$$DOCKER_USERNAME" --password-stdin
-	docker push rhasspy/$(PACKAGE_NAME):$(version)
+	docker push "rhasspy/$(PACKAGE_NAME):$(version)"
 
 # -----------------------------------------------------------------------------
 # Debian
 # -----------------------------------------------------------------------------
 
-pyinstaller:
+pyinstaller: $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz
 	mkdir -p dist
 	pyinstaller -y --workpath pyinstaller/build --distpath pyinstaller/dist $(PYTHON_NAME).spec
 	tar -C pyinstaller/dist -czf dist/$(PACKAGE_NAME)_$(version)_$(architecture).tar.gz $(SOURCE)/
@@ -83,5 +79,5 @@ debian: pyinstaller
 # -----------------------------------------------------------------------------
 
 # Download Python Pocketsphinx library with no dependency on PulseAudio.
-pocketsphinx-python.tar.gz:
+$(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz:
 	curl -sSfL -o $@ 'https://github.com/synesthesiam/pocketsphinx-python/releases/download/v1.0/pocketsphinx-python.tar.gz'

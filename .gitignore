@@ -6,4 +6,4 @@ dist/
 *.egg-info/
 .vscode/
 pyinstaller/
-pocketsphinx-python.tar.gz
+download/
