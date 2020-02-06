@@ -7,7 +7,7 @@ SHELL_FILES = bin/$(PACKAGE_NAME) debian/bin/* *.sh
 PIP_INSTALL ?= install
 DOWNLOAD_DIR = download
 
-.PHONY: reformat check dist venv test pyinstaller debian docker deploy
+.PHONY: reformat check dist venv test pyinstaller debian docker deploy downloads
 
 version := $(shell cat VERSION)
 architecture := $(shell bash architecture.sh)
