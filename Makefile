@@ -12,28 +12,17 @@ DOWNLOAD_DIR = download
 version := $(shell cat VERSION)
 architecture := $(shell bash architecture.sh)
 
-debian_package := $(PACKAGE_NAME)_$(version)_$(architecture)
-debian_dir := debian/$(debian_package)
-
 # -----------------------------------------------------------------------------
 # Python
 # -----------------------------------------------------------------------------
 
 reformat:
-	black .
-	isort $(PYTHON_FILES)
+	scripts/format-code.sh $(PYTHON_FILES)
 
 check:
-	flake8 $(PYTHON_FILES)
-	pylint $(PYTHON_FILES)
-	mypy $(PYTHON_FILES)
-	black --check .
-	isort --check-only $(PYTHON_FILES)
-	bashate $(SHELL_FILES)
-	yamllint .
-	pip list --outdated
+	scripts/check-code.sh $(PYTHON_FILES)
 
-venv: $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz
+venv: downloads
 	scripts/create-venv.sh
 
 dist: sdist debian
@@ -42,6 +31,9 @@ sdist:
 	python3 setup.py sdist
 
 test:
+	echo "Skipping tests for now"
+
+test-wavs:
 	bash etc/test/test_wavs.sh
 
 # -----------------------------------------------------------------------------
@@ -59,25 +51,19 @@ deploy:
 # Debian
 # -----------------------------------------------------------------------------
 
-pyinstaller: $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz
-	mkdir -p dist
-	pyinstaller -y --workpath pyinstaller/build --distpath pyinstaller/dist $(PYTHON_NAME).spec
-	tar -C pyinstaller/dist -czf dist/$(PACKAGE_NAME)_$(version)_$(architecture).tar.gz $(SOURCE)/
+pyinstaller:
+	scripts/build-pyinstaller.sh "${architecture}" "${version}"
 
-debian: pyinstaller
-	mkdir -p dist
-	rm -rf "$(debian_dir)"
-	mkdir -p "$(debian_dir)/DEBIAN" "$(debian_dir)/usr/bin" "$(debian_dir)/usr/lib"
-	cat debian/DEBIAN/control | version=$(version) architecture=$(architecture) envsubst > "$(debian_dir)/DEBIAN/control"
-	cp debian/bin/* "$(debian_dir)/usr/bin/"
-	cp -R pyinstaller/dist/$(PYTHON_NAME) "$(debian_dir)/usr/lib/"
-	cd debian/ && fakeroot dpkg --build "$(debian_package)"
-	mv "debian/$(debian_package).deb" dist/
+debian:
+	scripts/build-debian.sh "${architecture}" "${version}"
 
 # -----------------------------------------------------------------------------
 # Download
 # -----------------------------------------------------------------------------
 
+downloads: $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz
+
 # Download Python Pocketsphinx library with no dependency on PulseAudio.
 $(DOWNLOAD_DIR)/pocketsphinx-python.tar.gz:
+	mkdir -p "$(DOWNLOAD_DIR)"
 	curl -sSfL -o $@ 'https://github.com/synesthesiam/pocketsphinx-python/releases/download/v1.0/pocketsphinx-python.tar.gz'

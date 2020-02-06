@@ -28,6 +28,8 @@ source "${venv}/bin/activate"
 echo "Installing Python dependencies"
 pip3 ${PIP_INSTALL} --upgrade pip
 pip3 ${PIP_INSTALL} wheel setuptools
+
+# Install local pocketsphinx
 pip3 ${PIP_INSTALL} "${download}/pocketsphinx-python.tar.gz"
 
 # Install local Rhasspy dependencies if available
