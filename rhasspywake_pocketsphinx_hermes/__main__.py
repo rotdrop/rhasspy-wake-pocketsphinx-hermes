@@ -39,6 +39,9 @@ def main():
         help="Wakeword ID of each keyphrase (default: default)",
     )
     parser.add_argument(
+        "--udp-audio-port", type=int, help="Also listen for WAV audio on UDP"
+    )
+    parser.add_argument(
         "--host", default="localhost", help="MQTT host (default: localhost)"
     )
     parser.add_argument(
@@ -79,6 +82,7 @@ def main():
             wakeword_id=args.wakewordId,
             keyphrase_threshold=args.keyphrase_threshold,
             mllr_matrix=args.mllr_matrix,
+            udp_audio_port=args.udp_audio_port,
             siteIds=args.siteId,
             debug=args.debug,
         )
