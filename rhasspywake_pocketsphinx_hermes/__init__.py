@@ -5,6 +5,7 @@ import logging
 import queue
 import socket
 import subprocess
+import tempfile
 import threading
 import typing
 import wave
@@ -35,7 +36,7 @@ class WakeHermesMqtt:
         client,
         keyphrase: str,
         acoustic_model: Path,
-        dictionary_path: Path,
+        dictionary_paths: typing.List[Path],
         wakeword_id: str = "default",
         keyphrase_threshold: float = 1e-40,
         mllr_matrix: typing.Optional[Path] = None,
@@ -55,7 +56,7 @@ class WakeHermesMqtt:
         self.keyphrase_threshold = keyphrase_threshold
 
         self.acoustic_model = acoustic_model
-        self.dictionary_path = dictionary_path
+        self.dictionary_paths = dictionary_paths
         self.mllr_matrix = mllr_matrix
 
         self.wakeword_id = wakeword_id
@@ -97,24 +98,47 @@ class WakeHermesMqtt:
     def load_decoder(self):
         """Load Pocketsphinx decoder."""
         _LOGGER.debug(
-            "Loading decoder with hmm=%s, dict=%s",
+            "Loading decoder with hmm=%s, dicts=%s",
             str(self.acoustic_model),
-            str(self.dictionary_path),
+            self.dictionary_paths,
         )
 
-        decoder_config = pocketsphinx.Decoder.default_config()
-        decoder_config.set_string("-hmm", str(self.acoustic_model))
-        decoder_config.set_string("-dict", str(self.dictionary_path))
-        decoder_config.set_string("-keyphrase", self.keyphrase)
-        decoder_config.set_float("-kws_threshold", self.keyphrase_threshold)
+        words_needed = set(self.keyphrase.split())
 
-        if not self.debug:
-            decoder_config.set_string("-logfn", "/dev/null")
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt") as dict_file:
+            # Combine all dictionaries
+            for sub_dict_path in self.dictionary_paths:
+                if not sub_dict_path.is_file():
+                    _LOGGER.warning("Skipping dictionary %s", str(sub_dict_path))
+                    continue
 
-        if self.mllr_matrix and self.mllr_matrix.is_file():
-            decoder_config.set_string("-mllr", str(self.mllr_matrix))
+                with open(sub_dict_path, "r") as sub_dict_file:
+                    for line in sub_dict_file:
+                        line = line.strip()
+                        if line:
+                            word = line.split(maxsplit=2)[0]
+                            if word in words_needed:
+                                print(line, file=dict_file)
+                                words_needed.remove(word)
 
-        self.decoder = pocketsphinx.Decoder(decoder_config)
+            assert (
+                len(words_needed) == 0
+            ), f"Missing pronunciations for words: {words_needed}"
+            dict_file.seek(0)
+
+            decoder_config = pocketsphinx.Decoder.default_config()
+            decoder_config.set_string("-hmm", str(self.acoustic_model))
+            decoder_config.set_string("-dict", str(dict_file.name))
+            decoder_config.set_string("-keyphrase", self.keyphrase)
+            decoder_config.set_float("-kws_threshold", self.keyphrase_threshold)
+
+            if not self.debug:
+                decoder_config.set_string("-logfn", "/dev/null")
+
+            if self.mllr_matrix and self.mllr_matrix.is_file():
+                decoder_config.set_string("-mllr", str(self.mllr_matrix))
+
+            self.decoder = pocketsphinx.Decoder(decoder_config)
 
     # -------------------------------------------------------------------------
 

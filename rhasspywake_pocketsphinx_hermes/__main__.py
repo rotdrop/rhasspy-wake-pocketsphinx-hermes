@@ -19,7 +19,10 @@ def main():
         help="Path to Pocketsphinx acoustic model directory (hmm)",
     )
     parser.add_argument(
-        "--dictionary", required=True, help="Path to pronunciation dictionary file"
+        "--dictionary",
+        required=True,
+        action="append",
+        help="Path to pronunciation dictionary file(s)",
     )
     parser.add_argument(
         "--keyphrase", required=True, help="Keyword phrase to listen for"
@@ -67,7 +70,7 @@ def main():
     try:
         # Convert to paths
         args.acoustic_model = Path(args.acoustic_model)
-        args.dictionary = Path(args.dictionary)
+        args.dictionary = [Path(d) for d in args.dictionary]
 
         if args.mllr_matrix:
             args.mllr_matrix = Path(args.mllr_matrix)
