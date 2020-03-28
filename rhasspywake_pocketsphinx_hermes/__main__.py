@@ -42,8 +42,8 @@ def main():
     )
     parser.add_argument(
         "--wakewordId",
-        default="default",
-        help="Wakeword ID of each keyphrase (default: default)",
+        default="",
+        help="Wakeword ID of each keyphrase (default: use keyphrase)",
     )
     parser.add_argument(
         "--udp-audio-port", type=int, help="Also listen for WAV audio on UDP"

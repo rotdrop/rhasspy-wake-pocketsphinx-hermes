@@ -34,7 +34,7 @@ class WakeHermesMqtt(HermesClient):
         keyphrase: str,
         acoustic_model: Path,
         dictionary_paths: typing.List[Path],
-        wakeword_id: str = "default",
+        wakeword_id: str = "",
         keyphrase_threshold: float = 1e-40,
         mllr_matrix: typing.Optional[Path] = None,
         siteIds: typing.Optional[typing.List[str]] = None,
@@ -210,9 +210,13 @@ class WakeHermesMqtt(HermesClient):
                             self.decoder.end_utt()
                             self.decoder_started = False
 
+                        wakewordId = self.wakeword_id
+                        if not wakewordId:
+                            wakewordId = self.keyphrase
+
                         asyncio.run_coroutine_threadsafe(
                             self.publish_all(
-                                self.handle_detection(self.wakeword_id, siteId=siteId)
+                                self.handle_detection(wakewordId, siteId=siteId)
                             ),
                             self.loop,
                         )
