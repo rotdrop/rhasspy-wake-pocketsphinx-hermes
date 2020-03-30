@@ -46,7 +46,6 @@ class WakeHermesMqtt(HermesClient):
         udp_audio_port: typing.Optional[int] = None,
         udp_chunk_size: int = 2048,
         debug: bool = False,
-        loop=None,
     ):
         super().__init__(
             "rhasspywake_snowboy_hermes",
@@ -55,7 +54,6 @@ class WakeHermesMqtt(HermesClient):
             sample_width=sample_width,
             channels=channels,
             siteIds=siteIds,
-            loop=loop,
         )
 
         self.subscribe(AudioFrame, HotwordToggleOn, HotwordToggleOff)
@@ -214,11 +212,11 @@ class WakeHermesMqtt(HermesClient):
                         if not wakewordId:
                             wakewordId = self.keyphrase
 
-                        asyncio.run_coroutine_threadsafe(
+                        asyncio.ensure_future(
                             self.publish_all(
                                 self.handle_detection(wakewordId, siteId=siteId)
                             ),
-                            self.loop,
+                            loop=self.loop,
                         )
 
                         # Stop and clear buffer to avoid duplicate reports

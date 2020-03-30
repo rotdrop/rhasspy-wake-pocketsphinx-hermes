@@ -55,44 +55,42 @@ def main():
     hermes_cli.setup_logging(args)
     _LOGGER.debug(args)
 
+    # Convert to paths
+    args.acoustic_model = Path(args.acoustic_model)
+    args.dictionary = [Path(d) for d in args.dictionary]
+
+    if args.mllr_matrix:
+        args.mllr_matrix = Path(args.mllr_matrix)
+
+    # Listen for messages
+    client = mqtt.Client()
+    hermes = WakeHermesMqtt(
+        client,
+        args.keyphrase,
+        args.acoustic_model,
+        args.dictionary,
+        wakeword_id=args.wakewordId,
+        keyphrase_threshold=args.keyphrase_threshold,
+        mllr_matrix=args.mllr_matrix,
+        udp_audio_port=args.udp_audio_port,
+        siteIds=args.siteId,
+        debug=args.debug,
+    )
+
+    hermes.load_decoder()
+
+    _LOGGER.debug("Connecting to %s:%s", args.host, args.port)
+    hermes_cli.connect(client, args)
+    client.loop_start()
+
     try:
-        # Convert to paths
-        args.acoustic_model = Path(args.acoustic_model)
-        args.dictionary = [Path(d) for d in args.dictionary]
-
-        if args.mllr_matrix:
-            args.mllr_matrix = Path(args.mllr_matrix)
-
-        loop = asyncio.get_event_loop()
-
-        # Listen for messages
-        client = mqtt.Client()
-        hermes = WakeHermesMqtt(
-            client,
-            args.keyphrase,
-            args.acoustic_model,
-            args.dictionary,
-            wakeword_id=args.wakewordId,
-            keyphrase_threshold=args.keyphrase_threshold,
-            mllr_matrix=args.mllr_matrix,
-            udp_audio_port=args.udp_audio_port,
-            siteIds=args.siteId,
-            debug=args.debug,
-            loop=loop,
-        )
-
-        hermes.load_decoder()
-
-        _LOGGER.debug("Connecting to %s:%s", args.host, args.port)
-        hermes_cli.connect(client, args)
-        client.loop_start()
-
         # Run event loop
-        hermes.loop.run_forever()
+        asyncio.run(hermes.handle_messages_async())
     except KeyboardInterrupt:
         pass
     finally:
         _LOGGER.debug("Shutting down")
+        client.loop_stop()
 
 
 # -----------------------------------------------------------------------------
