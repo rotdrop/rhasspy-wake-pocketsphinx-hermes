@@ -20,7 +20,7 @@ from rhasspyhermes.wake import (
 )
 
 WAV_HEADER_BYTES = 44
-_LOGGER = logging.getLogger("rhasspywake_pocketsphinx_hemres")
+_LOGGER = logging.getLogger("rhasspywake_pocketsphinx_hermes")
 
 # -----------------------------------------------------------------------------
 
