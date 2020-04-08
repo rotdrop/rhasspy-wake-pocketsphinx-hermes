@@ -41,7 +41,7 @@ def main():
         "--mllr-matrix", default=None, help="Path to tuned MLLR matrix file"
     )
     parser.add_argument(
-        "--wakewordId",
+        "--wakeword-id",
         default="",
         help="Wakeword ID of each keyphrase (default: use keyphrase)",
     )
@@ -69,11 +69,11 @@ def main():
         args.keyphrase,
         args.acoustic_model,
         args.dictionary,
-        wakeword_id=args.wakewordId,
+        wakeword_id=args.wakeword_id,
         keyphrase_threshold=args.keyphrase_threshold,
         mllr_matrix=args.mllr_matrix,
         udp_audio_port=args.udp_audio_port,
-        siteIds=args.siteId,
+        site_ids=args.site_id,
         debug=args.debug,
     )
 
