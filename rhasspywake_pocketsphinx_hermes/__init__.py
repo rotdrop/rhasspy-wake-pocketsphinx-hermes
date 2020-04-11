@@ -274,6 +274,12 @@ class WakeHermesMqtt(HermesClient):
         elif isinstance(message, HotwordToggleOff):
             self.enabled = False
             self.disabled_reasons.add(message.reason)
+
+            # End utterance
+            if self.decoder_started:
+                self.decoder.end_utt()
+                self.decoder_started = False
+
             _LOGGER.debug("Disabled")
         elif isinstance(message, AudioFrame):
             if self.enabled:
