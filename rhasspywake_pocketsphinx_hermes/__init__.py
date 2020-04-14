@@ -44,7 +44,7 @@ class WakeHermesMqtt(HermesClient):
         sample_width: int = 2,
         channels: int = 1,
         chunk_size: int = 960,
-        udp_audio_port: typing.Optional[int] = None,
+        udp_audio: typing.Optional[typing.List[typing.Tuple[str, int, str]]] = None,
         udp_chunk_size: int = 2048,
         debug: bool = False,
     ):
@@ -77,13 +77,6 @@ class WakeHermesMqtt(HermesClient):
 
         self.chunk_size = chunk_size
 
-        # Listen for raw audio on UDP too
-        self.udp_audio_port = udp_audio_port
-        self.udp_chunk_size = udp_chunk_size
-
-        # site_id used for detections from UDP
-        self.udp_site_id = self.site_id
-
         # Queue of WAV audio chunks to process (plus site_id)
         self.wav_queue: queue.Queue = queue.Queue()
 
@@ -97,8 +90,16 @@ class WakeHermesMqtt(HermesClient):
         # Start threads
         threading.Thread(target=self.detection_thread_proc, daemon=True).start()
 
-        if self.udp_audio_port is not None:
-            threading.Thread(target=self.udp_thread_proc, daemon=True).start()
+        # Listen for raw audio on UDP too
+        self.udp_chunk_size = udp_chunk_size
+
+        if udp_audio:
+            for udp_host, udp_port, udp_site_id in udp_audio:
+                threading.Thread(
+                    target=self.udp_thread_proc,
+                    args=(udp_host, udp_port, udp_site_id),
+                    daemon=True,
+                ).start()
 
     # -------------------------------------------------------------------------
 
@@ -187,9 +188,6 @@ class WakeHermesMqtt(HermesClient):
                     self.load_decoder()
 
                 assert self.decoder is not None
-                if not self.decoder_started:
-                    self.decoder.start_utt()
-                    self.decoder_started = True
 
                 # Extract/convert audio data
                 audio_data = self.maybe_convert_wav(wav_bytes)
@@ -203,10 +201,16 @@ class WakeHermesMqtt(HermesClient):
                     chunk = self.audio_buffer[: self.chunk_size]
                     self.audio_buffer = self.audio_buffer[self.chunk_size :]
 
+                    if not self.decoder_started:
+                        # Begin utterance
+                        self.decoder.start_utt()
+                        self.decoder_started = True
+
                     self.decoder.process_raw(chunk, False, False)
                     hyp = self.decoder.hyp()
                     if hyp:
                         if self.decoder_started:
+                            # End utterance
                             self.decoder.end_utt()
                             self.decoder_started = False
 
@@ -230,12 +234,12 @@ class WakeHermesMqtt(HermesClient):
 
     # -------------------------------------------------------------------------
 
-    def udp_thread_proc(self):
+    def udp_thread_proc(self, host: str, port: int, site_id: str):
         """Handle WAV chunks from UDP socket."""
         try:
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp_socket.bind(("127.0.0.1", self.udp_audio_port))
-            _LOGGER.debug("Listening for audio on UDP port %s", self.udp_audio_port)
+            udp_socket.bind((host, port))
+            _LOGGER.debug("Listening for audio on UDP %s:%s", host, port)
 
             while True:
                 wav_bytes, _ = udp_socket.recvfrom(
@@ -243,13 +247,13 @@ class WakeHermesMqtt(HermesClient):
                 )
 
                 if self.enabled:
-                    self.wav_queue.put((wav_bytes, self.udp_site_id))
+                    self.wav_queue.put((wav_bytes, site_id))
         except Exception:
             _LOGGER.exception("udp_thread_proc")
 
     # -------------------------------------------------------------------------
 
-    async def on_message(
+    async def on_message_blocking(
         self,
         message: Message,
         site_id: typing.Optional[str] = None,
@@ -276,7 +280,7 @@ class WakeHermesMqtt(HermesClient):
             self.disabled_reasons.add(message.reason)
 
             # End utterance
-            if self.decoder_started:
+            if self.decoder and self.decoder_started:
                 self.decoder.end_utt()
                 self.decoder_started = False
 

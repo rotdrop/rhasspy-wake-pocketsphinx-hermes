@@ -46,7 +46,10 @@ def main():
         help="Wakeword ID of each keyphrase (default: use keyphrase)",
     )
     parser.add_argument(
-        "--udp-audio-port", type=int, help="Also listen for WAV audio on UDP"
+        "--udp-audio",
+        nargs=3,
+        action="append",
+        help="Host/port/siteId for UDP audio input",
     )
 
     hermes_cli.add_hermes_args(parser)
@@ -62,6 +65,12 @@ def main():
     if args.mllr_matrix:
         args.mllr_matrix = Path(args.mllr_matrix)
 
+    udp_audio = []
+    if args.udp_audio:
+        udp_audio = [
+            (host, int(port), site_id) for host, port, site_id in args.udp_audio
+        ]
+
     # Listen for messages
     client = mqtt.Client()
     hermes = WakeHermesMqtt(
@@ -72,7 +81,7 @@ def main():
         wakeword_id=args.wakeword_id,
         keyphrase_threshold=args.keyphrase_threshold,
         mllr_matrix=args.mllr_matrix,
-        udp_audio_port=args.udp_audio_port,
+        udp_audio=udp_audio,
         site_ids=args.site_id,
         debug=args.debug,
     )
