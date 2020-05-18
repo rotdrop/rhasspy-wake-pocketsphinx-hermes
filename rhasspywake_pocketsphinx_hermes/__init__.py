@@ -49,7 +49,7 @@ class WakeHermesMqtt(HermesClient):
         debug: bool = False,
     ):
         super().__init__(
-            "rhasspywake_snowboy_hermes",
+            "rhasspywake_pocketsphinx_hermes",
             client,
             sample_rate=sample_rate,
             sample_width=sample_width,
