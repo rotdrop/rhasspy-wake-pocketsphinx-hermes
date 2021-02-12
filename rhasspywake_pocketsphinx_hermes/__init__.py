@@ -9,6 +9,7 @@ import typing
 from pathlib import Path
 
 import pocketsphinx
+
 from rhasspyhermes.audioserver import AudioFrame
 from rhasspyhermes.base import Message
 from rhasspyhermes.client import GeneratorType, HermesClient, TopicArgs
@@ -47,6 +48,7 @@ class WakeHermesMqtt(HermesClient):
         udp_audio: typing.Optional[typing.List[typing.Tuple[str, int, str]]] = None,
         udp_chunk_size: int = 2048,
         debug: bool = False,
+        lang: typing.Optional[str] = None,
     ):
         super().__init__(
             "rhasspywake_pocketsphinx_hermes",
@@ -86,6 +88,8 @@ class WakeHermesMqtt(HermesClient):
         self.decoder: typing.Optional[pocketsphinx.Decoder] = []
         self.decoder_started = False
         self.debug = debug
+
+        self.lang = lang
 
         # Start threads
         threading.Thread(target=self.detection_thread_proc, daemon=True).start()
@@ -168,6 +172,7 @@ class WakeHermesMqtt(HermesClient):
                     current_sensitivity=self.keyphrase_threshold,
                     model_version="",
                     model_type="personal",
+                    lang=self.lang,
                 ),
                 {"wakeword_id": wakeword_id},
             )
