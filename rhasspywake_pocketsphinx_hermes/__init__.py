@@ -193,7 +193,7 @@ class WakeHermesMqtt(HermesClient):
             while True:
                 wav_bytes, site_id = self.wav_queues[site_id].get()
                 if self.first_audios[site_id]:
-                    _LOGGER.debug("Receiving audio")
+                    _LOGGER.debug("Receiving audio %s", site_id)
                     self.first_audios[site_id] = False
 
                 if not self.decoders[site_id]:
