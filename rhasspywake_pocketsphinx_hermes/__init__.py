@@ -187,7 +187,7 @@ class WakeHermesMqtt(HermesClient):
             _LOGGER.exception("handle_detection")
             yield HotwordError(error=str(e), context=self.keyphrase, site_id=site_id)
 
-    def detection_thread_proc(self):
+    def detection_thread_proc(self, site_id):
         """Handle WAV audio chunks."""
         try:
             while True:
