@@ -1,11 +1,14 @@
 """Hermes MQTT server for Rhasspy wakeword with pocketsphinx"""
 import asyncio
+import io
 import logging
 import queue
 import socket
 import tempfile
 import threading
 import typing
+import wave
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pocketsphinx
@@ -27,6 +30,28 @@ _LOGGER = logging.getLogger("rhasspywake_pocketsphinx_hermes")
 # -----------------------------------------------------------------------------
 
 
+@dataclass
+class SiteInfo:
+    """Self-contained information for a single site"""
+
+    site_id: str
+    enabled: bool = True
+    disabled_reasons: typing.Set[str] = field(default_factory=set)
+    detection_thread: typing.Optional[threading.Thread] = None
+    audio_buffer: bytes = bytes()
+    first_audio: bool = True
+    decoder: typing.Optional[pocketsphinx.Decoder] = None
+    decoder_started: bool = False
+
+    # Queue of (bytes, is_raw)
+    wav_queue: "queue.Queue[typing.Tuple[bytes, bool]]" = field(
+        default_factory=queue.Queue
+    )
+
+
+# -----------------------------------------------------------------------------
+
+
 class WakeHermesMqtt(HermesClient):
     """Hermes MQTT server for Rhasspy wakeword with pocketsphinx."""
 
@@ -40,13 +65,14 @@ class WakeHermesMqtt(HermesClient):
         keyphrase_threshold: float = 1e-40,
         mllr_matrix: typing.Optional[Path] = None,
         site_ids: typing.Optional[typing.List[str]] = None,
-        enabled: bool = True,
         sample_rate: int = 16000,
         sample_width: int = 2,
         channels: int = 1,
         chunk_size: int = 960,
         udp_audio: typing.Optional[typing.List[typing.Tuple[str, int, str]]] = None,
         udp_chunk_size: int = 2048,
+        udp_raw_audio: typing.Optional[typing.Iterable[str]] = None,
+        udp_forward_mqtt: typing.Optional[typing.Iterable[str]] = None,
         debug: bool = False,
         lang: typing.Optional[str] = None,
     ):
@@ -69,40 +95,41 @@ class WakeHermesMqtt(HermesClient):
         self.mllr_matrix = mllr_matrix
 
         self.wakeword_id = wakeword_id
-        self.enabled = enabled
-        self.disabled_reasons: typing.Set[str] = set()
 
         # Required audio format
         self.sample_rate = sample_rate
         self.sample_width = sample_width
         self.channels = channels
 
-        self.chunk_sizes = dict()
+        self.chunk_size = chunk_size
 
-        # Queue of WAV audio chunks to process (plus site_id)
-        self.wav_queues = dict()
+        self.site_info: typing.Dict[str, SiteInfo] = {}
 
-        self.first_audios = dict()
-        self.audio_buffers = dict()
-
-        self.decoders = dict()
-        self.decoders_started = dict()
-        self.debug = debug
-
+        # Create site information for known sites
         for site_id in self.site_ids:
-          self.audio_buffers[site_id] = bytes()
-          self.first_audios[site_id] = True
-          self.wav_queues[site_id] = queue.Queue()
-          self.decoders[site_id] = []
-          self.chunk_sizes[site_id] = chunk_size
-          self.decoders_started[site_id] = False
-          # Start threads
-          threading.Thread(target=self.detection_thread_proc, daemon=True, args=(site_id,)).start()
+            site_info = SiteInfo(site_id=site_id)
+
+            # Create and start detection thread
+            site_info.detection_thread = threading.Thread(
+                target=self.detection_thread_proc, daemon=True, args=(site_info,)
+            )
+            site_info.detection_thread.start()
+
+            self.site_info[site_id] = site_info
+
+        self.debug = debug
 
         self.lang = lang
 
         # Listen for raw audio on UDP too
         self.udp_chunk_size = udp_chunk_size
+
+        # Site ids where UDP audio is raw 16Khz, 16-bit mono PCM chunks instead
+        # of WAV chunks.
+        self.udp_raw_audio = set(udp_raw_audio or [])
+
+        # Site ids where UDP audio should be forward to MQTT after detection.
+        self.udp_forward_mqtt = set(udp_forward_mqtt or [])
 
         if udp_audio:
             for udp_host, udp_port, udp_site_id in udp_audio:
@@ -114,7 +141,7 @@ class WakeHermesMqtt(HermesClient):
 
     # -------------------------------------------------------------------------
 
-    def load_decoder(self, site_id):
+    def load_decoder(self, site_info: SiteInfo):
         """Load Pocketsphinx decoder."""
         _LOGGER.debug(
             "Loading decoder with hmm=%s, dicts=%s",
@@ -157,13 +184,39 @@ class WakeHermesMqtt(HermesClient):
             if self.mllr_matrix and self.mllr_matrix.is_file():
                 decoder_config.set_string("-mllr", str(self.mllr_matrix))
 
-            self.decoders[site_id] = pocketsphinx.Decoder(decoder_config)
+            site_info.decoder = pocketsphinx.Decoder(decoder_config)
+
+    # -------------------------------------------------------------------------
+    def stop(self):
+        """Stop detection threads."""
+        _LOGGER.debug("Stopping detection threads...")
+
+        for site_info in self.site_info.values():
+            if site_info.detection_thread is not None:
+                site_info.wav_queue.put((None, None))
+                site_info.detection_thread.join()
+                site_info.detection_thread = None
+
+            site_info.porcupine = None
+
+        _LOGGER.debug("Stopped")
 
     # -------------------------------------------------------------------------
 
     async def handle_audio_frame(self, wav_bytes: bytes, site_id: str = "default"):
         """Process a single audio frame"""
-        self.wav_queues[site_id].put((wav_bytes, site_id))
+        site_info = self.site_info.get(site_id)
+        if site_info is None:
+            # Create information for new site
+            site_info = SiteInfo(site_id=site_id)
+            site_info.detection_thread = threading.Thread(
+                target=self.detection_thread_proc, daemon=True, args=(site_info,)
+            )
+
+            site_info.detection_thread.start()
+            self.site_info[site_id] = site_info
+
+        site_info.wav_queue.put((wav_bytes, False))
 
     async def handle_detection(
         self, wakeword_id: str, site_id: str = "default"
@@ -187,58 +240,69 @@ class WakeHermesMqtt(HermesClient):
             _LOGGER.exception("handle_detection")
             yield HotwordError(error=str(e), context=self.keyphrase, site_id=site_id)
 
-    def detection_thread_proc(self, site_id):
+    def detection_thread_proc(self, site_info: SiteInfo):
         """Handle WAV audio chunks."""
         try:
             while True:
-                wav_bytes, site_id = self.wav_queues[site_id].get()
-                if self.first_audios[site_id]:
-                    _LOGGER.debug("Receiving audio %s", site_id)
-                    self.first_audios[site_id] = False
+                wav_bytes, is_raw = site_info.wav_queue.get()
+                if wav_bytes is None:
+                    # Shutdown signal
+                    break
 
-                if not self.decoders[site_id]:
-                    self.load_decoder(site_id)
+                if site_info.first_audio:
+                    _LOGGER.debug("Receiving audio %s", site_info.site_id)
+                    site_info.first_audio = False
 
-                assert self.decoders[site_id] is not None
+                if not site_info.decoder:
+                    self.load_decoder(site_info)
 
-                # Extract/convert audio data
-                audio_data = self.maybe_convert_wav(wav_bytes)
+                assert site_info.decoder is not None
+
+                if is_raw:
+                    # Raw audio chunks
+                    audio_data = wav_bytes
+                else:
+                    # WAV chunks
+                    audio_data = self.maybe_convert_wav(wav_bytes)
 
                 # Add to persistent buffer
-                self.audio_buffers[site_id] += audio_data
+                site_info.audio_buffer += audio_data
 
                 # Process in chunks.
                 # Any remaining audio data will be kept in buffer.
-                while len(self.audio_buffers[site_id]) >= self.chunk_sizes[site_id]:
-                    chunk = self.audio_buffers[site_id][: self.chunk_sizes[site_id]]
-                    self.audio_buffers[site_id] = self.audio_buffers[site_id][self.chunk_sizes[site_id] :]
+                while len(site_info.audio_buffer) >= self.chunk_size:
+                    chunk = site_info.audio_buffer[: self.chunk_size]
+                    site_info.audio_buffer = site_info.audio_buffer[self.chunk_size :]
 
-                    if not self.decoders_started[site_id]:
+                    if not site_info.decoder_started:
                         # Begin utterance
-                        self.decoders[site_id].start_utt()
-                        self.decoders_started[site_id] = True
+                        site_info.decoder.start_utt()
+                        site_info.decoder_started = True
 
-                    self.decoders[site_id].process_raw(chunk, False, False)
-                    hyp = self.decoders[site_id].hyp()
+                    site_info.decoder.process_raw(chunk, False, False)
+                    hyp = site_info.decoder.hyp()
                     if hyp:
-                        if self.decoders_started[site_id]:
+                        if site_info.decoder_started:
                             # End utterance
-                            self.decoders[site_id].end_utt()
-                            self.decoders_started[site_id] = False
+                            site_info.decoder.end_utt()
+                            site_info.decoder_started = False
 
                         wakeword_id = self.wakeword_id
                         if not wakeword_id:
                             wakeword_id = self.keyphrase
 
+                        assert self.loop is not None
                         asyncio.run_coroutine_threadsafe(
                             self.publish_all(
-                                self.handle_detection(wakeword_id, site_id=site_id)
+                                self.handle_detection(
+                                    wakeword_id, site_id=site_info.site_id
+                                )
                             ),
                             self.loop,
                         )
 
                         # Stop and clear buffer to avoid duplicate reports
-                        self.audio_buffers[site_id] = bytes()
+                        site_info.audio_buffer = bytes()
                         break
 
         except Exception:
@@ -249,17 +313,50 @@ class WakeHermesMqtt(HermesClient):
     def udp_thread_proc(self, host: str, port: int, site_id: str):
         """Handle WAV chunks from UDP socket."""
         try:
+            site_info = self.site_info[site_id]
+            is_raw_audio = site_id in self.udp_raw_audio
+            forward_to_mqtt = site_id in self.udp_forward_mqtt
+
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             udp_socket.bind((host, port))
-            _LOGGER.debug("Listening for audio on UDP %s:%s", host, port)
+            _LOGGER.debug(
+                "Listening for audio on UDP %s:%s (siteId=%s, raw=%s)",
+                host,
+                port,
+                site_id,
+                is_raw_audio,
+            )
+
+            chunk_size = self.udp_chunk_size
+            if is_raw_audio:
+                chunk_size += WAV_HEADER_BYTES
 
             while True:
-                wav_bytes, _ = udp_socket.recvfrom(
-                    self.udp_chunk_size + WAV_HEADER_BYTES
-                )
+                wav_bytes, _ = udp_socket.recvfrom(chunk_size)
 
-                if self.enabled:
-                    self.wav_queues[site_id].put((wav_bytes, site_id))
+                if site_info.enabled:
+                    site_info.wav_queue.put((wav_bytes, is_raw_audio))
+                elif forward_to_mqtt:
+                    # When the wake word service is disabled, ASR should be active
+                    if is_raw_audio:
+                        # Re-package as WAV chunk and publish to MQTT
+                        with io.BytesIO() as wav_buffer:
+                            wav_file: wave.Wave_write = wave.open(wav_buffer, "wb")
+                            with wav_file:
+                                wav_file.setframerate(self.sample_rate)
+                                wav_file.setsampwidth(self.sample_width)
+                                wav_file.setnchannels(self.channels)
+                                wav_file.writeframes(wav_bytes)
+
+                            publish_wav_bytes = wav_buffer.getvalue()
+                    else:
+                        # Use WAV chunk as-is
+                        publish_wav_bytes = wav_bytes
+
+                    self.publish(
+                        AudioFrame(wav_bytes=publish_wav_bytes),
+                        site_id=site_info.site_id,
+                    )
         except Exception:
             _LOGGER.exception("udp_thread_proc")
 
@@ -274,33 +371,39 @@ class WakeHermesMqtt(HermesClient):
     ) -> GeneratorType:
         """Received message from MQTT broker."""
         # Check enable/disable messages
+        site_info = self.site_info.get(site_id) if site_id else None
+
         if isinstance(message, HotwordToggleOn):
-            if message.reason == HotwordToggleReason.UNKNOWN:
-                # Always enable on unknown
-                self.disabled_reasons.clear()
-            else:
-                self.disabled_reasons.discard(message.reason)
+            if site_info:
+                if message.reason == HotwordToggleReason.UNKNOWN:
+                    # Always enable on unknown
+                    site_info.disabled_reasons.clear()
+                else:
+                    site_info.disabled_reasons.discard(message.reason)
 
-            if self.disabled_reasons:
-                _LOGGER.debug("Still disabled: %s", self.disabled_reasons)
-            else:
-                self.enabled = True
-                self.first_audios[site_id] = True
-                _LOGGER.debug("Enabled")
+                if site_info.disabled_reasons:
+                    _LOGGER.debug("Still disabled: %s", site_info.disabled_reasons)
+                else:
+                    site_info.enabled = True
+                    site_info.first_audio = True
+
+                    _LOGGER.debug("Enabled")
         elif isinstance(message, HotwordToggleOff):
-            self.enabled = False
-            self.disabled_reasons.add(message.reason)
+            if site_info:
+                site_info.enabled = False
+                site_info.disabled_reasons.add(message.reason)
 
-            # End utterance
-            if self.decoders[site_id] and self.decoders_started[site_id]:
-                self.decoders[site_id].end_utt()
-                self.decoders_started[site_id] = False
+                # End utterance
+                if site_info.decoder and site_info.decoder_started:
+                    site_info.decoder.end_utt()
+                    site_info.decoder_started = False
 
-            _LOGGER.debug("Disabled")
+                _LOGGER.debug("Disabled")
         elif isinstance(message, AudioFrame):
-            if self.enabled:
-                assert site_id, "Missing site_id"
-                await self.handle_audio_frame(message.wav_bytes, site_id=site_id)
+            if site_info and site_info.enabled:
+                await self.handle_audio_frame(
+                    message.wav_bytes, site_id=site_info.site_id
+                )
         else:
             _LOGGER.warning("Unexpected message: %s", message)
 
